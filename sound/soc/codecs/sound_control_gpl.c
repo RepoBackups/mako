@@ -1,325 +1,168 @@
 /*
- * Author: Paul Reioux aka Faux123 <reioux@gmail.com>
+ * Copyright 2013 Francisco Franco
  *
- * WCD93xx sound control module
- * Copyright 2013 Paul Reioux
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
-#include <linux/module.h>
-#include <linux/kobject.h>
-#include <linux/sysfs.h>
-#include <linux/kallsyms.h>
+#include <linux/init.h>
+#include <linux/device.h>
+#include <linux/miscdevice.h>
 
-#include <sound/control.h>
-#include <sound/soc.h>
+#define SOUNDCONTROL_VERSION 4
 
-extern struct snd_kcontrol_new *gpl_faux_snd_controls_ptr;
+extern void update_headphones_volume_boost(unsigned int vol_boost);
 
-#define SOUND_CONTROL_MAJOR_VERSION	2
-#define SOUND_CONTROL_MINOR_VERSION	1
+extern void update_headset_volume_boost(int gain_boost);
 
-#define CAMCORDER_MIC_OFFSET    20
-#define HANDSET_MIC_OFFSET      21
-#define SPEAKER_OFFSET          10
-#define HEADPHONE_L_OFFSET      8
-#define HEADPHONE_R_OFFSET      9
+extern void update_mic_gain(int gain_boost);
 
-#define HEADPHONE_PA_L_OFFSET	6
-#define HEADPHONE_PA_R_OFFSET	7
+/*
+ * Volume boost value
+ */
+int boost = 0;
+int boost_limit = 20;
+int boost_limit_min = -20;
 
-static ssize_t cam_mic_gain_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+int headset_boost = 0;
+int headset_boost_limit = 30;
+int headset_boost_limit_min = -30;
+
+int mic_gain = 0;
+int mic_gain_limit = 10;
+
+/*
+ * Sysfs get/set entries
+ */
+
+static ssize_t volume_boost_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	struct soc_mixer_control *l_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[CAMCORDER_MIC_OFFSET].
-			private_value;
-
-	return sprintf(buf, "%d", l_mixer_ptr->max);
+    return sprintf(buf, "%d\n", boost);
 }
 
-static ssize_t cam_mic_gain_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
+static ssize_t volume_boost_store(struct device * dev, struct device_attribute * attr, const char * buf, size_t size)
 {
-	int l_max;
-	int l_delta;
-	struct soc_mixer_control *l_mixer_ptr;
+    int new_val;
 
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[CAMCORDER_MIC_OFFSET].
-			private_value;
+	sscanf(buf, "%d", &new_val);
 
-	sscanf(buf, "%d", &l_max);
- 
-	// limit the max gain
-	l_delta = l_max - l_mixer_ptr->platform_max;
-	l_mixer_ptr->platform_max = l_max;
-	l_mixer_ptr->max = l_max;
-	l_mixer_ptr->min += l_delta;
+	if (new_val != boost) {
+		if (new_val <= boost_limit_min)
+			new_val = boost_limit_min;
 
-	return (count);
-}
+		else if (new_val >= boost_limit)
+			new_val = boost_limit;
 
-static ssize_t mic_gain_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
-{
-	struct soc_mixer_control *l_mixer_ptr;
+		pr_info("New volume_boost: %d\n", new_val);
 
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[HANDSET_MIC_OFFSET].
-			private_value;
-
-	return sprintf(buf, "%d", l_mixer_ptr->max);
-}
-
-static ssize_t mic_gain_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	int l_max;
-	int l_delta;
-	struct soc_mixer_control *l_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[HANDSET_MIC_OFFSET].
-			private_value;
-
-	sscanf(buf, "%d", &l_max);
-
-	l_delta = l_max - l_mixer_ptr->platform_max;
-	l_mixer_ptr->platform_max = l_max;
-	l_mixer_ptr->max = l_max;
-	l_mixer_ptr->min += l_delta;
-
-	return (count);
-}
-
-static ssize_t speaker_gain_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
-{
-	struct soc_mixer_control *l_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[SPEAKER_OFFSET].
-			private_value;
-
-	return sprintf(buf, "%d", l_mixer_ptr->max);
-}
-
-static ssize_t speaker_gain_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	int l_max;
-	int l_delta;
-	struct soc_mixer_control *l_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[SPEAKER_OFFSET].
-			private_value;
-
-	sscanf(buf, "%d", &l_max);
-
-	l_delta = l_max - l_mixer_ptr->platform_max;
-	l_mixer_ptr->platform_max = l_max;
-	l_mixer_ptr->max = l_max;
-	l_mixer_ptr->min += l_delta;
-
-	return (count);
-}
-
-static ssize_t headphone_gain_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
-{
-	struct soc_mixer_control *l_mixer_ptr, *r_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[HEADPHONE_L_OFFSET].
-			private_value;
-	r_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[HEADPHONE_R_OFFSET].
-			private_value;
-
-	return sprintf(buf, "%d %d",
-			l_mixer_ptr->max,
-			r_mixer_ptr->max);
-}
-
-static ssize_t headphone_gain_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	int l_max, r_max;
-	int l_delta, r_delta;
-	struct soc_mixer_control *l_mixer_ptr, *r_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[HEADPHONE_L_OFFSET].
-			private_value;
-	r_mixer_ptr =
-		(struct soc_mixer_control *)gpl_faux_snd_controls_ptr[HEADPHONE_R_OFFSET].
-			private_value;
-
-	sscanf(buf, "%d %d", &l_max, &r_max);
-
-	l_delta = l_max - l_mixer_ptr->platform_max;
-	l_mixer_ptr->platform_max = l_max;
-	l_mixer_ptr->max = l_max;
-	l_mixer_ptr->min += l_delta;
-
-	r_delta = r_max - r_mixer_ptr->platform_max;
-	r_mixer_ptr->platform_max = r_max;
-	r_mixer_ptr->max = r_max;
-	r_mixer_ptr->min += r_delta;
- 
-	return count;
-}
-
-static ssize_t headphone_pa_gain_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
-{
-	struct soc_mixer_control *l_mixer_ptr, *r_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)
-			gpl_faux_snd_controls_ptr[HEADPHONE_PA_L_OFFSET].
-			private_value;
-	r_mixer_ptr =
-		(struct soc_mixer_control *)
-			gpl_faux_snd_controls_ptr[HEADPHONE_PA_R_OFFSET].
-			private_value;
-
-	return sprintf(buf, "%d %d",
-			l_mixer_ptr->max,
-			r_mixer_ptr->max);
-}
-
-static ssize_t headphone_pa_gain_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	int l_max, r_max;
-	int l_delta, r_delta;
-	struct soc_mixer_control *l_mixer_ptr, *r_mixer_ptr;
-
-	l_mixer_ptr =
-		(struct soc_mixer_control *)
-			gpl_faux_snd_controls_ptr[HEADPHONE_PA_L_OFFSET].
-			private_value;
-	r_mixer_ptr =
-		(struct soc_mixer_control *)
-			gpl_faux_snd_controls_ptr[HEADPHONE_PA_R_OFFSET].
-			private_value;
-
-	sscanf(buf, "%d %d", &l_max, &r_max);
-
-	l_delta = l_max - l_mixer_ptr->platform_max;
-	l_mixer_ptr->platform_max = l_max;
-	l_mixer_ptr->max = l_max;
-	l_mixer_ptr->min += l_delta;
-
-	r_delta = r_max - r_mixer_ptr->platform_max;
-	r_mixer_ptr->platform_max = r_max;
-	r_mixer_ptr->max = r_max;
-	r_mixer_ptr->min += r_delta;
-
-	return count;
-}
-
-static ssize_t sound_control_version_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
-{
-	return sprintf(buf, "version: %u.%u\n",
-			SOUND_CONTROL_MAJOR_VERSION,
-			SOUND_CONTROL_MINOR_VERSION);
-}
-
-static struct kobj_attribute cam_mic_gain_attribute =
-	__ATTR(gpl_cam_mic_gain,
-		0666,
-		cam_mic_gain_show,
-		cam_mic_gain_store);
-
-static struct kobj_attribute mic_gain_attribute =
-	__ATTR(gpl_mic_gain,
-		0666,
-		mic_gain_show,
-		mic_gain_store);
-
-static struct kobj_attribute speaker_gain_attribute =
-	__ATTR(gpl_speaker_gain,
-		0666,
-		speaker_gain_show,
-		speaker_gain_store);
-
-static struct kobj_attribute headphone_gain_attribute =
-	__ATTR(gpl_headphone_gain,
-		0666,
-		headphone_gain_show,
-		headphone_gain_store);
-
-static struct kobj_attribute headphone_pa_gain_attribute =
-	__ATTR(gpl_headphone_pa_gain,
-		0666,
-		headphone_pa_gain_show,
-		headphone_pa_gain_store);
-
-static struct kobj_attribute sound_control_version_attribute =
-	__ATTR(gpl_sound_control_version,
-		0444,
-		sound_control_version_show, NULL);
-
-static struct attribute *sound_control_attrs[] =
-	{
-		&cam_mic_gain_attribute.attr,
-		&mic_gain_attribute.attr,
-		&speaker_gain_attribute.attr,
-		&headphone_gain_attribute.attr,
-		&headphone_pa_gain_attribute.attr,
-		&sound_control_version_attribute.attr,
-		NULL,
-	};
-
-static struct attribute_group sound_control_attr_group =
-	{
-		.attrs = sound_control_attrs,
-	};
-
-static struct kobject *sound_control_kobj;
-
-static int sound_control_init(void)
-{
-	int sysfs_result;
-
-	if (gpl_faux_snd_controls_ptr == NULL) {
-		pr_err("%s sound_controls_ptr is NULL!\n", __FUNCTION__);
-		return -1;
+		boost = new_val;
+		update_headphones_volume_boost(boost);
 	}
 
-	sound_control_kobj =
-		kobject_create_and_add("sound_control", kernel_kobj);
-
-	if (!sound_control_kobj) {
-		pr_err("%s sound_control_kobj create failed!\n",
-			__FUNCTION__);
-		return -ENOMEM;
-        }
-
-	sysfs_result = sysfs_create_group(sound_control_kobj,
-			&sound_control_attr_group);
-
-	if (sysfs_result) {
-		pr_info("%s sysfs create failed!\n", __FUNCTION__);
-		kobject_put(sound_control_kobj);
-	}
-	return sysfs_result;
+    return size;
 }
 
-static void sound_control_exit(void)
+static ssize_t headset_boost_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	if (sound_control_kobj != NULL)
-		kobject_put(sound_control_kobj);
+    return sprintf(buf, "%d\n", headset_boost);
 }
 
-module_init(sound_control_init);
-module_exit(sound_control_exit);
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Paul Reioux <reioux@gmail.com>");
-MODULE_DESCRIPTION("Sound Control Module GPL Edition");
+static ssize_t headset_boost_store(struct device * dev, struct device_attribute * attr, const char * buf, size_t size)
+{
+    int new_val;
 
+	sscanf(buf, "%d", &new_val);
+
+	if (new_val != headset_boost) {
+		if (new_val <= headset_boost_limit_min)
+			new_val = headset_boost_limit_min;
+
+		else if (new_val >= headset_boost_limit)
+			new_val = headset_boost_limit;
+
+		pr_info("New headset_boost: %d\n", new_val);
+
+		headset_boost = new_val;
+		update_headset_volume_boost(headset_boost);
+	}
+
+    return size;
+}
+
+static ssize_t mic_gain_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+    return sprintf(buf, "%d\n", mic_gain);
+}
+
+static ssize_t mic_gain_store(struct device * dev, struct device_attribute * attr, const char * buf, size_t size)
+{
+    int new_val;
+
+	sscanf(buf, "%d", &new_val);
+
+	if (new_val != mic_gain) {
+		if (new_val >= mic_gain_limit)
+			new_val = mic_gain_limit;
+
+		pr_info("New Mic gain_boost: %d\n", new_val);
+
+		mic_gain = new_val;
+		update_headset_volume_boost(mic_gain);
+	}
+
+    return size;
+}
+
+static ssize_t soundcontrol_version(struct device * dev, struct device_attribute * attr, char * buf)
+{
+    return sprintf(buf, "%d\n", SOUNDCONTROL_VERSION);
+}
+
+static DEVICE_ATTR(volume_boost, 0664, volume_boost_show, volume_boost_store);
+static DEVICE_ATTR(headset_boost, 0664, headset_boost_show, headset_boost_store);
+static DEVICE_ATTR(mic_gain, 0664, mic_gain_show, mic_gain_store);
+
+static DEVICE_ATTR(version, 0664 , soundcontrol_version, NULL);
+
+static struct attribute *soundcontrol_attributes[] = 
+{
+	&dev_attr_volume_boost.attr,
+	&dev_attr_headset_boost.attr,
+	&dev_attr_mic_gain.attr,
+	&dev_attr_version.attr,
+	NULL
+};
+
+static struct attribute_group soundcontrol_group = 
+{
+	.attrs  = soundcontrol_attributes,
+};
+
+static struct miscdevice soundcontrol_device = 
+{
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "soundcontrol",
+};
+
+static int __init soundcontrol_init(void)
+{
+    int ret;
+
+    pr_info("%s misc_register(%s)\n", __FUNCTION__, soundcontrol_device.name);
+
+    ret = misc_register(&soundcontrol_device);
+
+    if (ret) {
+	    pr_err("%s misc_register(%s) fail\n", __FUNCTION__, soundcontrol_device.name);
+	    return 1;
+	}
+
+    if (sysfs_create_group(&soundcontrol_device.this_device->kobj, &soundcontrol_group) < 0) {
+	    pr_err("%s sysfs_create_group fail\n", __FUNCTION__);
+	    pr_err("Failed to create sysfs group for device (%s)!\n", soundcontrol_device.name);
+	}
+
+    return 0;
+}
+late_initcall(soundcontrol_init);
