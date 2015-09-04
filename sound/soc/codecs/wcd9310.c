@@ -38,6 +38,15 @@
 #include <linux/suspend.h>
 #include "wcd9310.h"
 
+static struct sound_control {
+	unsigned int default_headset_val;
+	unsigned int default_headphones_val;
+	unsigned int default_mic_gain_val;
+	struct snd_soc_codec *sound_control_codec;
+	bool lock;
+} soundcontrol = {
+	.lock = false,
+};
 static int cfilt_adjust_ms = 10;
 module_param(cfilt_adjust_ms, int, 0644);
 MODULE_PARM_DESC(cfilt_adjust_ms, "delay after adjusting cfilt voltage in ms");
@@ -1057,7 +1066,7 @@ static const struct soc_enum cf_rxmix6_enum =
 static const struct soc_enum cf_rxmix7_enum =
 	SOC_ENUM_SINGLE(TABLA_A_CDC_RX7_B4_CTL, 1, 3, cf_text);
 
-static const struct snd_kcontrol_new tabla_snd_controls[] = {
+static struct snd_kcontrol_new tabla_snd_controls[] = {
 
 	SOC_ENUM_EXT("EAR PA Gain", tabla_ear_pa_gain_enum[0],
 		tabla_pa_gain_get, tabla_pa_gain_put),
@@ -2818,7 +2827,6 @@ static int tabla_codec_enable_dec(struct snd_soc_dapm_widget *w,
 				  snd_soc_read(codec,
 				  tx_digital_gain_reg[w->shift + offset])
 				  );
-
 		break;
 
 	case SND_SOC_DAPM_PRE_PMD:
@@ -3836,7 +3844,6 @@ static int tabla_readable(struct snd_soc_codec *ssc, unsigned int reg)
 
 	return tabla_reg_readable[reg];
 }
-
 static bool tabla_is_digital_gain_register(unsigned int reg)
 {
 	bool rtn = false;
@@ -3903,18 +3910,67 @@ static int tabla_volatile(struct snd_soc_codec *ssc, unsigned int reg)
 
 	return 0;
 }
+
+int reg_access(unsigned int reg)
+{
+	int ret = 1;
+
+	switch (reg) {
+		case TABLA_A_RX_HPH_L_GAIN:
+		case TABLA_A_RX_HPH_R_GAIN:
+		case TABLA_A_RX_HPH_L_STATUS:
+		case TABLA_A_RX_HPH_R_STATUS:
+		case TABLA_A_CDC_RX1_VOL_CTL_B2_CTL:
+		case TABLA_A_CDC_RX2_VOL_CTL_B2_CTL:
+		case TABLA_A_CDC_RX3_VOL_CTL_B2_CTL:
+		case TABLA_A_CDC_RX4_VOL_CTL_B2_CTL:
+		case TABLA_A_CDC_RX5_VOL_CTL_B2_CTL:
+		case TABLA_A_CDC_RX6_VOL_CTL_B2_CTL:
+		case TABLA_A_CDC_RX7_VOL_CTL_B2_CTL:
+		case TABLA_A_CDC_TX1_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX2_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX3_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX4_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX5_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX6_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX7_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX8_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX9_VOL_CTL_GAIN:
+		case TABLA_A_CDC_TX10_VOL_CTL_GAIN:
+			if (soundcontrol.lock)
+				ret = 0;
+			break;
+		default:
+			break;
+		}
+
+	return ret;
+}
+
 #define TABLA_FORMATS (SNDRV_PCM_FMTBIT_S16_LE)
+static int tabla_write(struct snd_soc_codec *codec, unsigned int reg,
+	unsigned int value)
+{
+	int ret;
+	int val;
 
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-extern int snd_hax_reg_access(unsigned int);
-extern unsigned int snd_hax_cache_read(unsigned int);
-extern void snd_hax_cache_write(unsigned int, unsigned int);
-#endif
+	BUG_ON(reg > TABLA_MAX_REGISTER);
 
-#ifndef CONFIG_SOUND_CONTROL_HAX_3_GPL
-static
-#endif
-unsigned int tabla_read(struct snd_soc_codec *codec,
+	if (!tabla_volatile(codec, reg)) {
+		ret = snd_soc_cache_write(codec, reg, value);
+		if (ret != 0)
+			dev_err(codec->dev, "Cache write to %x failed: %d\n",
+				reg, ret);
+	}
+
+	if (!reg_access(reg))
+		val = wcd9xxx_reg_read(codec->control_data, reg);
+	else
+		val = value;
+
+	return wcd9xxx_reg_write(codec->control_data, reg, val);
+}
+static unsigned int tabla_read(struct snd_soc_codec *codec,
 				unsigned int reg)
 {
 	unsigned int val;
@@ -3935,46 +3991,6 @@ unsigned int tabla_read(struct snd_soc_codec *codec,
 	val = wcd9xxx_reg_read(codec->control_data, reg);
 	return val;
 }
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-EXPORT_SYMBOL(tabla_read);
-#endif
-
-#ifndef CONFIG_SOUND_CONTROL_HAX_3_GPL
-static
-#endif
-int tabla_write(struct snd_soc_codec *codec, unsigned int reg,
-	unsigned int value)
-{
-	int ret;
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-	int val;
-#endif
-
-	BUG_ON(reg > TABLA_MAX_REGISTER);
-
-	if (!tabla_volatile(codec, reg)) {
-		ret = snd_soc_cache_write(codec, reg, value);
-		if (ret != 0)
-			dev_err(codec->dev, "Cache write to %x failed: %d\n",
-				reg, ret);
-	}
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-	if (!snd_hax_reg_access(reg)) {
-		if (!((val = snd_hax_cache_read(reg)) != -1)) {
-			val = wcd9xxx_reg_read_safe(codec->control_data, reg);
-		}
-	} else {
-		snd_hax_cache_write(reg, value);
-		val = value;
-	}
-	return wcd9xxx_reg_write(codec->control_data, reg, val);
-#else
-	return wcd9xxx_reg_write(codec->control_data, reg, value);
-#endif
-}
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-EXPORT_SYMBOL(tabla_write);
-#endif
 
 static s16 tabla_get_current_v_ins(struct tabla_priv *tabla, bool hu)
 {
@@ -8396,14 +8412,72 @@ static const struct file_operations codec_mbhc_debug_ops = {
 };
 #endif
 
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-struct snd_kcontrol_new *gpl_faux_snd_controls_ptr =
-		(struct snd_kcontrol_new *)tabla_snd_controls;
-struct snd_soc_codec *fauxsound_codec_ptr;
-EXPORT_SYMBOL(fauxsound_codec_ptr);
-int wcd9xxx_hw_revision;
-EXPORT_SYMBOL(wcd9xxx_hw_revision);
+#ifdef CONFIG_SOUND_CONTROL
+void update_headphones_volume_boost(int vol_boost)
+{
+	unsigned int default_val = soundcontrol.default_headphones_val;
+	unsigned int boosted_val = vol_boost != 0 ? 
+									default_val + vol_boost : default_val;
+
+	pr_info("Sound Control: Headphones default value %d\n", default_val);
+	
+	soundcontrol.lock = false;
+	tabla_write(soundcontrol.sound_control_codec, 
+				TABLA_A_CDC_RX1_VOL_CTL_B2_CTL, boosted_val);
+	tabla_write(soundcontrol.sound_control_codec, 
+				TABLA_A_CDC_RX2_VOL_CTL_B2_CTL, boosted_val);
+	soundcontrol.lock = true;
+	
+	pr_info("Sound Control: Boosted Headphones RX1 value %d\n", 
+			tabla_read(soundcontrol.sound_control_codec, 
+						TABLA_A_CDC_RX1_VOL_CTL_B2_CTL));
+	pr_info("Sound Control: Boosted Headphones RX2 value %d\n", 
+			tabla_read(soundcontrol.sound_control_codec, 
+						TABLA_A_CDC_RX2_VOL_CTL_B2_CTL));
+}
+
+void update_headset_volume_boost(int vol_boost)
+{
+	unsigned int default_val = soundcontrol.default_headset_val;
+	unsigned int boosted_val = vol_boost != 0 ? 
+									default_val + vol_boost : default_val;
+
+	pr_info("Sound Control: Headset default value %d\n", default_val);
+	
+	soundcontrol.lock = false;
+	tabla_write(soundcontrol.sound_control_codec, 
+				TABLA_A_RX_HPH_L_GAIN, boosted_val);
+	tabla_write(soundcontrol.sound_control_codec, 
+				TABLA_A_RX_HPH_R_GAIN, boosted_val);
+	soundcontrol.lock = true;
+	
+	pr_info("Sound Control: Boosted Headset L value %d\n", 
+			tabla_read(soundcontrol.sound_control_codec, 
+						TABLA_A_RX_HPH_L_GAIN));
+	pr_info("Sound Control: Boosted Headset R value %d\n", 
+			tabla_read(soundcontrol.sound_control_codec, 
+						TABLA_A_RX_HPH_R_GAIN));
+}
+
+void update_mic_gain(int gain_boost)
+{
+	unsigned int default_val = soundcontrol.default_mic_gain_val;
+	unsigned int boosted_val = gain_boost != 0 ? 
+									default_val + gain_boost : default_val;
+
+	pr_info("Sound Control: Mic gain default value %d\n", default_val);
+	
+	soundcontrol.lock = false;
+	tabla_write(soundcontrol.sound_control_codec, 
+				TABLA_A_CDC_TX4_VOL_CTL_GAIN, boosted_val);
+	soundcontrol.lock = true;
+	
+	pr_info("Sound Control: Boosted Mic gain value %d\n", 
+			tabla_read(soundcontrol.sound_control_codec, 
+						TABLA_A_CDC_TX4_VOL_CTL_GAIN));
+}
 #endif
+
 
 static int tabla_codec_probe(struct snd_soc_codec *codec)
 {
@@ -8414,22 +8488,12 @@ static int tabla_codec_probe(struct snd_soc_codec *codec)
 	int i;
 	int ch_cnt;
 
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-	pr_info("tabla codec probe...\n");
-	fauxsound_codec_ptr = codec;
-#endif
+	soundcontrol.sound_control_codec = codec;
 
 	codec->control_data = dev_get_drvdata(codec->dev->parent);
 	control = codec->control_data;
 
-#ifdef CONFIG_SOUND_CONTROL_HAX_3_GPL
-	if (TABLA_IS_2_0(control->version))
-		wcd9xxx_hw_revision = 1;
-	else
-		wcd9xxx_hw_revision = 2;
-#endif
 	tabla = kzalloc(sizeof(struct tabla_priv), GFP_KERNEL);
-
 	if (!tabla) {
 		dev_err(codec->dev, "Failed to allocate private data\n");
 		return -ENOMEM;
@@ -8649,6 +8713,14 @@ static int tabla_codec_probe(struct snd_soc_codec *codec)
 	}
 #endif
 	codec->ignore_pmdown_time = 1;
+
+	/*
+	 * Get the defaults using the tabla helper read reg function
+	 */
+	soundcontrol.default_headset_val = tabla_read(codec, TABLA_A_RX_HPH_L_GAIN);
+	soundcontrol.default_headphones_val = tabla_read(codec, 
+												TABLA_A_CDC_RX1_VOL_CTL_B2_CTL);
+
 	return ret;
 
 err_hphr_ocp_irq:
